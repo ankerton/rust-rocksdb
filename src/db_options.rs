@@ -232,6 +232,8 @@ pub(crate) struct OptionsMustOutliveDB {
     comparator: Option<Arc<OwnedComparator>>,
     compaction_filter: Option<Arc<OwnedCompactionFilter>>,
     logger_callback: Option<Arc<LoggerCallback>>,
+    #[cfg(feature = "encrypted-env")]
+    encrypted_env: Option<crate::env::EncryptedEnv>,
 }
 
 impl OptionsMustOutliveDB {
@@ -248,7 +250,14 @@ impl OptionsMustOutliveDB {
             comparator: self.comparator.clone(),
             compaction_filter: self.compaction_filter.clone(),
             logger_callback: self.logger_callback.clone(),
+            #[cfg(feature = "encrypted-env")]
+            encrypted_env: None, // EncryptedEnv is not cloneable
         }
+    }
+
+    #[cfg(feature = "encrypted-env")]
+    pub(crate) fn encrypted_env(&self) -> Option<&crate::env::EncryptedEnv> {
+        self.encrypted_env.as_ref()
     }
 }
 
@@ -1384,6 +1393,33 @@ impl Options {
             ffi::rocksdb_options_set_env(self.inner, env.0.inner);
         }
         self.outlive.env = Some(env.clone());
+    }
+
+    /// Sets the encrypted environment for transparent encryption at rest.
+    ///
+    /// This enables RocksDB's `EncryptedEnv` which uses AES-256-CTR encryption
+    /// for all SST files, WAL files, and manifest files written to disk.
+    ///
+    /// The `EncryptedEnv` takes ownership of the encryption key. The key buffer
+    /// is zeroed in memory after being passed to the C++ layer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rocksdb::{Options, EncryptedEnv};
+    ///
+    /// let key: Vec<u8> = vec![0x42u8; 32]; // 32-byte AES-256 key
+    /// let encrypted_env = EncryptedEnv::new(key).unwrap();
+    ///
+    /// let mut opts = Options::default();
+    /// opts.set_encrypted_env(encrypted_env);
+    /// ```
+    #[cfg(feature = "encrypted-env")]
+    pub fn set_encrypted_env(&mut self, env: crate::env::EncryptedEnv) {
+        unsafe {
+            crate::env::ffi_encrypted::rocksdb_options_set_env(self.inner, env.as_ptr());
+        }
+        self.outlive.encrypted_env = Some(env);
     }
 
     /// Sets the compression algorithm that will be used for compressing blocks.

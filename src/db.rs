@@ -721,6 +721,16 @@ impl<T: ThreadMode> DBWithThreadMode<T> {
         cpath: &CString,
         access_type: &AccessType,
     ) -> Result<*mut ffi::rocksdb_t, Error> {
+        #[cfg(feature = "encrypted-env")]
+        if let Some(encrypted_env) = opts.outlive.encrypted_env() {
+            unsafe {
+                crate::env::ffi_encrypted::rocksdb_options_set_env(
+                    opts.inner,
+                    encrypted_env.as_ptr() as *mut _,
+                );
+            }
+        }
+
         let db = unsafe {
             match *access_type {
                 AccessType::ReadOnly {
@@ -760,6 +770,16 @@ impl<T: ThreadMode> DBWithThreadMode<T> {
         cfhandles: &mut [*mut ffi::rocksdb_column_family_handle_t],
         access_type: &AccessType,
     ) -> Result<*mut ffi::rocksdb_t, Error> {
+        #[cfg(feature = "encrypted-env")]
+        if let Some(encrypted_env) = opts.outlive.encrypted_env() {
+            unsafe {
+                crate::env::ffi_encrypted::rocksdb_options_set_env(
+                    opts.inner,
+                    encrypted_env.as_ptr() as *mut _,
+                );
+            }
+        }
+
         let db = unsafe {
             match *access_type {
                 AccessType::ReadOnly {

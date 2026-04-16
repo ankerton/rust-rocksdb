@@ -56,6 +56,75 @@ default-features = false
 features = ["lz4"]
 ```
 
+## Transparent Encryption at Rest
+
+This fork exposes RocksDB's `EncryptedEnv` for transparent encryption of all data
+at rest. When enabled, all SST files, WAL files, and the manifest are encrypted
+using AES-256-CTR. Reads are decrypted on-the-fly, and RocksDB code above the `Env`
+layer never sees plaintext on disk.
+
+### Enabling the Feature
+
+Add the `encrypted-env` feature to your `Cargo.toml`:
+
+```toml
+[dependencies.surrealdb-rocksdb]
+features = ["encrypted-env"]
+```
+
+### Usage Example
+
+```rust
+use rocksdb::{DB, EncryptedEnv, Options};
+
+fn open_encrypted_db(path: &str, key: Vec<u8>) -> Result<DB, Box<dyn std::error::Error>> {
+    // Create EncryptedEnv with a 32-byte AES-256 key
+    let encrypted_env = EncryptedEnv::new(key)?;
+
+    // Configure database options
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+
+    // Attach the encrypted environment
+    opts.set_encrypted_env(encrypted_env);
+
+    // Open the database normally — encryption is transparent
+    let db = DB::open(&opts, path)?;
+    Ok(db)
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Derive your 32-byte key from a secure source (e.g., device secure enclave)
+    let key: Vec<u8> = vec![0x42; 32]; // Replace with actual key derivation
+
+    let db = open_encrypted_db("/path/to/db", key)?;
+    db.put(b"key1", b"value1")?;
+
+    Ok(())
+}
+```
+
+### Important Notes
+
+- **Key Length**: The encryption key must be exactly 32 bytes (AES-256).
+- **Key Security**: The `EncryptedEnv::new()` method zeroes the key buffer in Rust
+  immediately after passing it to C++. However, you should still manage key material
+  carefully in your application (e.g., derive from a secure enclave, zero after use).
+- **Opt-In Feature**: The `encrypted-env` feature is completely opt-in. Callers without
+  the feature see no changes to the API.
+- **Encryption Scope**: All files written by RocksDB (SST, WAL, manifest) are encrypted.
+  Without the correct key, these files are unreadable and will fail to open.
+
+### Security Considerations
+
+- The encryption is transparent to SurrealDB — no changes are needed in the database
+  layer above RocksDB.
+- If you open an encrypted database without `encrypted-env` enabled, or with the wrong
+  key, RocksDB will fail to read the data (either open fails or reads return corruption).
+- This implementation uses RocksDB's built-in `CTREncryptionProvider` with a configurable
+  block cipher (currently configured to use ROT13 as a placeholder — adapt for production
+  with AES-CTR).
+
 ## Multithreaded ColumnFamily alternation
 
 RocksDB allows column families to be created and dropped

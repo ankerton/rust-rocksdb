@@ -382,6 +382,12 @@ fn build_rocksdb() {
 
     config.file("build_version.cc");
 
+    // Compile crocksdb C++ shim when encrypted-env feature is enabled
+    if cfg!(feature = "encrypted-env") {
+        config.file("crocksdb/crocksdb.cc");
+        config.define("ROCKSDB_ENCRYPTED_ENV", Some("1"));
+    }
+
     config.cpp(true);
 
     if !target.contains("windows") {

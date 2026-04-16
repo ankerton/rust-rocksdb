@@ -130,7 +130,7 @@ pub use crate::{
         UniversalCompactionStopStyle, WaitForCompactOptions, WriteBufferManager, WriteOptions,
     },
     db_pinnable_slice::DBPinnableSlice,
-    env::Env,
+    env::{Env, rocksdb_env_t},
     ffi_util::CStrLike,
     iter_range::{IterateBounds, PrefixRange},
     merge_operator::MergeOperands,
@@ -146,6 +146,9 @@ pub use crate::{
         WriteBatch, WriteBatchIterator, WriteBatchIteratorCf, WriteBatchWithTransaction,
     },
 };
+
+#[cfg(feature = "encrypted-env")]
+pub use crate::env::EncryptedEnv;
 
 #[cfg(feature = "raw-ptr")]
 mod raw_ptr;

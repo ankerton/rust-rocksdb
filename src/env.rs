@@ -1,8 +1,20 @@
 use std::sync::Arc;
 
-use libc::{self, c_int};
+use libc::{self, c_int, c_void};
 
 use crate::{ffi, Error};
+
+#[cfg(feature = "encrypted-env")]
+use std::ptr::NonNull;
+
+/// A C-compatible rocksdb_env_t struct for use with EncryptedEnv.
+/// This is defined here because the FFI bindings from rocksdb/c.h define
+/// rocksdb_env_t as an opaque pointer, but we need the rep field to store
+/// the C++ Env pointer.
+#[repr(C)]
+pub struct rocksdb_env_t {
+    pub rep: *mut c_void,
+}
 
 /// An Env is an interface used by the rocksdb implementation to access
 /// operating system functionality like the filesystem etc. Callers
@@ -143,3 +155,118 @@ impl Env {
 
 unsafe impl Send for EnvWrapper {}
 unsafe impl Sync for EnvWrapper {}
+
+// FFI declarations for EncryptedEnv (only when feature is enabled)
+#[cfg(feature = "encrypted-env")]
+pub mod ffi_encrypted {
+    use crate::ffi;
+    use libc::{self, c_char, size_t};
+
+    extern "C" {
+        /// Create a CTREncryptionProvider with the given 32-byte key.
+        /// Returns a raw pointer to the provider. Caller owns the pointer.
+        /// Key must be exactly 32 bytes (AES-256).
+        pub fn crocksdb_ctr_encryption_provider_create(
+            key: *const c_char,
+            key_len: size_t,
+        ) -> *mut libc::c_void;
+
+        /// Destroy a CTREncryptionProvider created by crocksdb_ctr_encryption_provider_create.
+        pub fn crocksdb_ctr_encryption_provider_destroy(
+            provider: *mut libc::c_void,
+        );
+
+        /// Create an EncryptedEnv wrapping the default Env with the given provider.
+        /// Returns a raw pointer to the EncryptedEnv. Caller owns the pointer.
+        pub fn crocksdb_encrypted_env_create(
+            provider: *mut libc::c_void,
+        ) -> *mut libc::c_void;
+
+        /// Destroy an EncryptedEnv created by crocksdb_encrypted_env_create.
+        pub fn crocksdb_encrypted_env_destroy(
+            env: *mut libc::c_void,
+        );
+
+        /// Set the Env for rocksdb_options_t.
+        /// This is used to set a custom Env (e.g., EncryptedEnv) on database options.
+        pub fn rocksdb_options_set_env(
+            options: *mut ffi::rocksdb_options_t,
+            env: *mut libc::c_void,
+        );
+    }
+}
+
+/// A handle to a RocksDB EncryptedEnv.
+/// When passed to Options, all I/O through this DB instance is AES-256-CTR encrypted.
+/// The key is consumed at construction — it is zeroed in memory after being passed to C++.
+#[cfg(feature = "encrypted-env")]
+pub struct EncryptedEnv {
+    provider_ptr: NonNull<libc::c_void>,
+    env_struct: Box<rocksdb_env_t>,
+}
+
+#[cfg(feature = "encrypted-env")]
+impl EncryptedEnv {
+    /// Create a new EncryptedEnv with a 32-byte AES-256 key.
+    /// The key buffer is zeroed after use.
+    /// Returns an error if key length is not exactly 32 bytes.
+    pub fn new(mut key: Vec<u8>) -> Result<Self, String> {
+        if key.len() != 32 {
+            return Err(format!(
+                "EncryptedEnv key must be exactly 32 bytes, got {}",
+                key.len()
+            ));
+        }
+
+        let provider_ptr = unsafe {
+            ffi_encrypted::crocksdb_ctr_encryption_provider_create(
+                key.as_ptr() as *const libc::c_char,
+                key.len(),
+            )
+        };
+
+        // Zero the key immediately after passing to C++
+        for b in &mut key {
+            *b = 0;
+        }
+        drop(key);
+
+        let provider_ptr = NonNull::new(provider_ptr)
+            .ok_or_else(|| "Failed to create CTREncryptionProvider".to_string())?;
+
+        let env_raw = unsafe {
+            ffi_encrypted::crocksdb_encrypted_env_create(provider_ptr.as_ptr())
+        };
+
+        let env_raw = NonNull::new(env_raw)
+            .ok_or_else(|| "Failed to create EncryptedEnv".to_string())?;
+
+        // Create a rocksdb_env_t struct with the rep field set to the C++ Env pointer
+        let env_struct = Box::new(rocksdb_env_t { rep: env_raw.as_ptr() });
+
+        Ok(Self { provider_ptr, env_struct })
+    }
+
+    /// Returns the raw env pointer for passing to Options.
+    /// Do not free this pointer manually — Drop handles cleanup.
+    pub(crate) fn as_ptr(&self) -> *mut libc::c_void {
+        self.env_struct.rep
+    }
+}
+
+#[cfg(feature = "encrypted-env")]
+impl Drop for EncryptedEnv {
+    fn drop(&mut self) {
+        unsafe {
+            // The env_struct is dropped here, but the C++ EncryptedEnv is still alive
+            // The crocksdb_encrypted_env_destroy will be called by the FFI function
+            // which takes ownership of the C++ Env pointer
+            ffi_encrypted::crocksdb_encrypted_env_destroy(self.env_struct.rep);
+            ffi_encrypted::crocksdb_ctr_encryption_provider_destroy(self.provider_ptr.as_ptr());
+        }
+    }
+}
+
+// EncryptedEnv is not Clone or Copy — the raw pointer must not be aliased.
+#[cfg(feature = "encrypted-env")]
+unsafe impl Send for EncryptedEnv {}

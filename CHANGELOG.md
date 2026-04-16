@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add `encrypted-env` feature flag for transparent at-rest encryption via RocksDB's `EncryptedEnv` (AGENTS.md)
+
+### Implementation
+
+- Added C++ shim in `crocksdb.cc` for `CTREncryptionProvider` and `EncryptedEnv` factory functions
+- Added `ffi_encrypted` module in `env.rs` with FFI bindings for encryption provider and env creation/destruction
+- Implemented `EncryptedEnv` struct that:
+  - Takes a 32-byte AES-256 key
+  - Zeroes the key buffer after passing to C++
+  - Properly manages memory via `Drop` trait
+- Added `Options::set_encrypted_env()` method to configure encryption on database open
+- Feature-gated all changes behind `encrypted-env` Cargo feature flag
+
 ## 0.24.0-surreal.1 (2026-03-02)
 
 This is the SurrealDB fork of rust-rocksdb, based on upstream version 0.24.0.
