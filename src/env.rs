@@ -249,8 +249,9 @@ impl EncryptedEnv {
 
     /// Returns the raw env pointer for passing to Options.
     /// Do not free this pointer manually — Drop handles cleanup.
-    pub(crate) fn as_ptr(&self) -> *mut libc::c_void {
-        self.env_struct.rep
+    pub(crate) fn as_ptr(&self) -> *mut rocksdb_env_t {
+        // Use raw pointer to avoid clippy warnings about borrow_as_ptr and ptr_cast_constness
+        (&raw const *self.env_struct).cast_mut()
     }
 }
 

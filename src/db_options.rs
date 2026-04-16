@@ -256,6 +256,7 @@ impl OptionsMustOutliveDB {
     }
 
     #[cfg(feature = "encrypted-env")]
+    #[allow(dead_code)]
     pub(crate) fn encrypted_env(&self) -> Option<&crate::env::EncryptedEnv> {
         self.encrypted_env.as_ref()
     }
@@ -1417,7 +1418,10 @@ impl Options {
     #[cfg(feature = "encrypted-env")]
     pub fn set_encrypted_env(&mut self, env: crate::env::EncryptedEnv) {
         unsafe {
-            crate::env::ffi_encrypted::rocksdb_options_set_env(self.inner, env.as_ptr());
+            crate::env::ffi_encrypted::rocksdb_options_set_env(
+                self.inner,
+                env.as_ptr() as *mut libc::c_void,
+            );
         }
         self.outlive.encrypted_env = Some(env);
     }

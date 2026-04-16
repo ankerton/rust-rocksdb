@@ -27,11 +27,10 @@ struct rocksdb_env_t {
 extern "C" {
 #endif
 
-/// Create a CTREncryptionProvider with a ROT13 cipher (for testing).
-/// For production use with AES-256, implement a custom BlockCipher.
+/// Create a CTREncryptionProvider with AES-256 cipher.
 /// Returns a raw pointer to the provider. Caller owns the pointer.
-/// The key parameter is used to set the block size for ROT13 cipher.
-/// For AES-256, you would pass a 32-byte key and implement a custom BlockCipher.
+/// The key must be exactly 32 bytes (AES-256 key size).
+/// The provider is created using the CTREncryptionProvider with AES256:16 cipher.
 ROCKSDB_LIBRARY_API void* crocksdb_ctr_encryption_provider_create(const char* key, size_t key_len);
 
 /// Destroy a CTREncryptionProvider created by crocksdb_ctr_encryption_provider_create.

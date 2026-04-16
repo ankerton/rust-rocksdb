@@ -113,17 +113,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Opt-In Feature**: The `encrypted-env` feature is completely opt-in. Callers without
   the feature see no changes to the API.
 - **Encryption Scope**: All files written by RocksDB (SST, WAL, manifest) are encrypted.
-  Without the correct key, these files are unreadable and will fail to open.
+   Without the correct key, these files are unreadable and will fail to open.
 
 ### Security Considerations
 
 - The encryption is transparent to SurrealDB — no changes are needed in the database
-  layer above RocksDB.
+   layer above RocksDB.
 - If you open an encrypted database without `encrypted-env` enabled, or with the wrong
-  key, RocksDB will fail to read the data (either open fails or reads return corruption).
-- This implementation uses RocksDB's built-in `CTREncryptionProvider` with a configurable
-  block cipher (currently configured to use ROT13 as a placeholder — adapt for production
-  with AES-CTR).
+   key, RocksDB will fail to read the data (either open fails or reads return corruption).
+- This implementation uses RocksDB's built-in `CTREncryptionProvider` with AES-256-CTR
+   encryption. The key must be exactly 32 bytes for AES-256.
 
 ## Multithreaded ColumnFamily alternation
 

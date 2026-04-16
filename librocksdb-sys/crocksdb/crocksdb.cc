@@ -33,14 +33,15 @@ void* crocksdb_ctr_encryption_provider_create(const char* key, size_t key_len) {
         return nullptr;
     }
     
-    // Create a ROT13 block cipher with 16-byte block size (for testing)
-    // Note: ROT13 is for testing only - use proper AES cipher in production
+    // Create AES-256 block cipher using CTREncryptionProvider
+    // CTREncryptionProvider takes the key directly in its constructor
     rocksdb::ConfigOptions config_opts;
     std::shared_ptr<rocksdb::BlockCipher> cipher_ptr;
     
-    // Use CreateFromString to create ROT13 cipher: "ROT13:16" means block size 16
+    // Create AES-256 cipher with the provided key
+    // The key is 32 bytes for AES-256
     rocksdb::Status status = rocksdb::BlockCipher::CreateFromString(
-        config_opts, "ROT13:16", &cipher_ptr);
+        config_opts, "AES256:16", &cipher_ptr);
     
     if (!status.ok()) {
         return nullptr;
