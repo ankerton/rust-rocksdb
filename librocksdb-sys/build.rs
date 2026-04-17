@@ -100,6 +100,7 @@ fn build_rocksdb() {
     let mut config = cc::Build::new();
     config.include("rocksdb/include/");
     config.include("rocksdb/");
+    config.include("rocksdb/env/");
     config.include("rocksdb/third-party/gtest-1.8.1/fused-src/");
 
     if cfg!(feature = "snappy") {
@@ -336,6 +337,23 @@ fn build_rocksdb() {
         if let Some(jemalloc_root) = env::var_os("DEP_JEMALLOC_ROOT") {
             config.include(Path::new(&jemalloc_root).join("include"));
         }
+    }
+
+    // OpenSSL for AES-256 encryption
+    #[cfg(feature = "encrypted-env")]
+    {
+        // The openssl-sys crate with vendored feature builds OpenSSL and sets up
+        // the necessary environment variables (DEP_OPENSSL_INCLUDE, etc.)
+        // We need to add the include path for the C++ code
+        // Try DEP_OPENSSL_INCLUDE first (set by openssl-sys vendored feature),
+        // then fall back to DEP_OPENSSL_INCLUDE_DIR
+        let openssl_include = env::var("DEP_OPENSSL_INCLUDE").ok();
+        let openssl_include_dir = env::var("DEP_OPENSSL_INCLUDE_DIR").ok();
+        if let Some(include) = openssl_include.or(openssl_include_dir) {
+            config.include(include);
+        }
+        println!("cargo:rustc-link-lib=static=ssl");
+        println!("cargo:rustc-link-lib=static=crypto");
     }
 
     #[cfg(feature = "io-uring")]

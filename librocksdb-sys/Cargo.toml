@@ -38,7 +38,7 @@ name = "librocksdb_sys"
 [features]
 default = ["static", "bindgen/runtime"]
 jemalloc = ["tikv-jemalloc-sys"]
-encrypted-env = []
+encrypted-env = ["openssl-sys/vendored"]
 static = ["libz-sys?/static", "bzip2-sys?/static"]
 bindgen-runtime = ["bindgen/runtime"]
 bindgen-static = ["bindgen/static"]
@@ -54,6 +54,8 @@ lto = []
 
 [dependencies]
 libc = "0.2"
+openssl-sys = { version = "0.9", features = ["vendored"], optional = true }
+pkg-config = { version = "0.3", optional = true }
 tikv-jemalloc-sys = { version = "0.6", features = [
     "unprefixed_malloc_on_supported_platforms",
 ], optional = true }
@@ -71,4 +73,4 @@ uuid = { version = "1.0", features = ["v4"] }
 [build-dependencies]
 cc = { version = "1.0", features = ["parallel"] }
 bindgen = { version = "0.72", default-features = false }
-pkg-config = { version = "0.3", optional = true }
+openssl-sys = { version = "0.9", features = ["vendored"] }
