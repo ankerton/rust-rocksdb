@@ -1,18 +1,18 @@
 [package]
-name = "surrealdb-rocksdb"
-description = "Rust wrapper for Facebook's RocksDB embeddable database"
-version = "0.24.0"
+name = "surrealdb-rocksdb-ankerton"
+description = "Rust wrapper for Facebook's RocksDB embeddable database with an encryption at rest patch"
+version = "0.24.0-ankerton.1"
 edition = "2021"
 rust-version = "1.85.0"
 authors = [
     "Tyler Neely <t@jujit.su>",
     "David Greenberg <dsg123456789@gmail.com>",
 ]
-repository = "https://github.com/surrealdb/rust-rocksdb"
+repository = "https://github.com/ankerton/rust-rocksdb"
 license = "Apache-2.0"
 categories = ["database"]
 keywords = ["database", "embedded", "LSM-tree", "persistence"]
-homepage = "https://github.com/surrealdb/rust-rocksdb"
+homepage = "https://github.com/ankerton/rust-rocksdb"
 exclude = [".gitignore", ".travis.yml", "deploy.sh", "test/**/*"]
 
 [workspace]
