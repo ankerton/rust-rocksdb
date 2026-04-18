@@ -41,14 +41,16 @@ set at startup from `AppCrypto::raw_key()`. The `kvs/rocksdb/mod.rs` backend cal
 
 ---
 
-## Plan B — Transaction Timestamps (MVCC / versioned datastore)
+## Plan B — Transaction Timestamps (MVCC / versioned datastore) ✅ COMPLETE
 
-### What this plan delivers
+### What was built
 
-Expose `Transaction::set_commit_timestamp` and `Transaction::set_read_timestamp_for_validation`
-in the Rust wrapper layer. These are the only two methods missing to fully enable
-SurrealDB's `versioned = true` datastore mode, which provides MVCC point-in-time reads
-backed by RocksDB's User-Defined Timestamp (UDT) API.
+Exposed `Transaction::set_commit_timestamp` and `Transaction::set_read_timestamp_for_validation`
+in the Rust wrapper layer — the only two methods missing to fully enable SurrealDB's
+`versioned = true` datastore mode, which provides MVCC point-in-time reads backed by
+RocksDB's User-Defined Timestamp (UDT) API.
+
+Committed as: `d02a5df versioned datastorage exposed`
 
 ### Background — how RocksDB UDT works
 
@@ -89,197 +91,20 @@ target/debug/build/surrealdb-librocksdb-sys-*/out/bindings.rs
 
 No C++, no FFI, no bindgen changes needed. Only Rust wrapper code.
 
-### Scope
-
-**One file:** `src/transactions/transaction.rs`
-
-Do not touch anything else in this repo.
-
----
-
-### Step 1 — Add the two wrapper methods
+### What was done
 
 **File:** `src/transactions/transaction.rs`
 
-Find the `impl<DB> Transaction<'_, DB>` block that contains `commit`, `rollback`,
-`set_name`, `set_savepoint`, etc. Add the following two methods after `commit`:
+Added two methods to `impl<DB> Transaction<'_, DB>`:
+- `set_commit_timestamp(&self, ts: u64)` — stamps all writes with an HLC timestamp before commit
+- `set_read_timestamp_for_validation(&self, ts: u64)` — sets the read timestamp for conflict validation in `OptimisticTransactionDB`
 
-```rust
-/// Stamp all writes in this transaction with the given commit timestamp.
-///
-/// Must be called before [`commit`] when the column family was opened with a
-/// timestamp-aware comparator (User-Defined Timestamps). The timestamp is an
-/// opaque `u64` — SurrealDB uses 8-byte little-endian HLC values.
-///
-/// Calling this on a transaction against a non-UDT column family is a no-op
-/// at the RocksDB level but should be avoided for clarity.
-///
-/// [`commit`]: Transaction::commit
-pub fn set_commit_timestamp(&self, ts: u64) {
-    unsafe {
-        ffi::rocksdb_transaction_set_commit_timestamp(self.inner, ts);
-    }
-}
+Both call bindgen-generated FFI directly — no C++ or librocksdb-sys changes were needed as both functions were already in the generated `bindings.rs` from `c.h`.
 
-/// Set the read timestamp used for conflict validation.
-///
-/// `OptimisticTransactionDB` requires this to be set before commit when the
-/// column family uses User-Defined Timestamps. RocksDB uses it to detect
-/// write–write conflicts against the correct version range.
-///
-/// Set this immediately after creating the transaction, before any reads or
-/// writes. Pass the same timestamp as `ReadOptions::set_timestamp` used for
-/// reads within this transaction. Use `u64::MAX` to validate against the
-/// latest version.
-pub fn set_read_timestamp_for_validation(&self, ts: u64) {
-    unsafe {
-        ffi::rocksdb_transaction_set_read_timestamp_for_validation(self.inner, ts);
-    }
-}
-```
+Smoke tests added in `mod timestamp_tests` at the bottom of the file.
 
-Both methods are infallible at the Rust level — the underlying C functions have no
-error path. The `unsafe` block is required because the functions are `extern "C"`.
+### SurrealDB follow-on ✅ COMPLETE
 
----
-
-### Step 2 — Build verification
-
-```bash
-cd /Users/zs/Workspaces/rust-rocksdb
-
-# Must pass with zero errors
-cargo build
-
-# Must pass — confirms no regression in the downstream consumer
-cd /Users/zs/Workspaces/surrealdb
-cargo build --no-default-features --features storage-rocksdb
-```
-
-If `cargo build` fails with an unresolved symbol, double-check the function name
-against the generated bindings:
-
-```bash
-grep "set_commit_timestamp\|set_read_timestamp" \
-  target/debug/build/surrealdb-librocksdb-sys-*/out/bindings.rs
-```
-
----
-
-### Step 3 — Tests
-
-Add a unit test in `src/transactions/transaction.rs` at the bottom of the file:
-
-```rust
-#[cfg(test)]
-mod timestamp_tests {
-    use super::*;
-    use crate::{OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteOptions};
-    use tempfile::TempDir;
-
-    fn open_udt_db(dir: &TempDir) -> OptimisticTransactionDB {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
-        // UDT requires a timestamp-aware comparator. For this test we use the
-        // default comparator — sufficient to verify the FFI call does not crash.
-        OptimisticTransactionDB::open(&opts, dir.path()).unwrap()
-    }
-
-    #[test]
-    fn test_set_commit_timestamp_does_not_panic() {
-        let dir = TempDir::new().unwrap();
-        let db = open_udt_db(&dir);
-        let txn = db.transaction_opt(
-            &WriteOptions::default(),
-            &OptimisticTransactionOptions::default(),
-        );
-        // Must not panic or segfault
-        txn.set_commit_timestamp(42u64);
-        // Commit may fail on a non-UDT DB — we only care that the call itself works
-        let _ = txn.commit();
-    }
-
-    #[test]
-    fn test_set_read_timestamp_for_validation_does_not_panic() {
-        let dir = TempDir::new().unwrap();
-        let db = open_udt_db(&dir);
-        let txn = db.transaction_opt(
-            &WriteOptions::default(),
-            &OptimisticTransactionOptions::default(),
-        );
-        txn.set_read_timestamp_for_validation(u64::MAX);
-        let _ = txn.commit();
-    }
-}
-```
-
-Run with:
-
-```bash
-cd /Users/zs/Workspaces/rust-rocksdb
-cargo test transactions
-```
-
----
-
-### Step 4 — Follow-on: restore SurrealDB call site
-
-Once this crate builds cleanly, make the following changes in
-`/Users/zs/Workspaces/surrealdb`:
-
-**File:** `surrealdb/core/src/kvs/rocksdb/mod.rs`
-
-**4a — Restore the import** (near the top of the file):
-```rust
-use crate::kvs::timestamp::HlcTimeStamp;
-```
-
-**4b — Replace the stub error** (currently around line 556):
-```rust
-// Versioned commit timestamps are not supported with this RocksDB build
-if self.versioned {
-    return Err(Error::Internal(
-        "versioned transactions require RocksDB timestamp support, which is not available in this build".into(),
-    ));
-}
-```
-With the original logic:
-```rust
-// When versioned, stamp all writes with the current HLC timestamp
-if self.versioned {
-    let ts = HlcTimeStamp::next();
-    inner.set_commit_timestamp(ts.0);
-}
-```
-
-**4c — Wire `set_read_timestamp_for_validation` if needed**
-
-If integration tests show a RocksDB panic at commit time on a versioned datastore,
-add this immediately after the `inner` transaction is created in `Datastore::begin`:
-
-```rust
-if self.versioned {
-    inner.set_read_timestamp_for_validation(u64::MAX);
-}
-```
-
-Only add if tests show it is required.
-
----
-
-### Definition of done
-
-- [ ] `Transaction::set_commit_timestamp` exists and is callable
-- [ ] `Transaction::set_read_timestamp_for_validation` exists and is callable
-- [ ] `cargo build` passes in this repo with zero errors
-- [ ] `cargo test transactions` passes
-- [ ] `cargo build --no-default-features --features storage-rocksdb` passes in surrealdb
-- [ ] SurrealDB call site restored (Step 4a + 4b)
-- [ ] Opening a SurrealDB datastore with `versioned=true` commits without error
-
-### What is explicitly out of scope for this repo
-
-- Changing anything in `librocksdb-sys` — the bindings are already correct
-- Changing the C++ RocksDB source
-- Changing SurrealDB's comparator, garbage collector, or `ReadOptions` handling
-- Adding UDT support to any backend other than RocksDB
+`surrealdb/core/src/kvs/rocksdb/mod.rs` — `HlcTimeStamp` import and
+`inner.set_commit_timestamp(ts.0)` call were intact throughout (no restore needed).
+Encryption wiring merged to `main` via `feat/rocksdb-encryption` branch.
