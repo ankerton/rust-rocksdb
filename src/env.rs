@@ -196,13 +196,53 @@ pub mod ffi_encrypted {
     }
 }
 
+/// Inner state of an EncryptedEnv — owns the C++ objects and destroys them on drop.
+///
+/// Wrapped in `Arc` so that `EncryptedEnv` itself can be `Clone`: clones share
+/// ownership of the underlying C++ EncryptedEnv and provider, which are destroyed
+/// only when the last clone is dropped.  This is necessary because
+/// `OptionsMustOutliveDB::clone()` must be able to include the env so that the
+/// DB's `_outlive` vector keeps the C++ objects alive for the lifetime of the DB.
+#[cfg(feature = "encrypted-env")]
+struct EncryptedEnvInner {
+    provider_ptr: NonNull<libc::c_void>,
+    /// Raw pointer to the C++ `Env*` returned by `crocksdb_encrypted_env_create`.
+    env_raw: NonNull<libc::c_void>,
+}
+
+#[cfg(feature = "encrypted-env")]
+impl Drop for EncryptedEnvInner {
+    fn drop(&mut self) {
+        unsafe {
+            ffi_encrypted::crocksdb_encrypted_env_destroy(self.env_raw.as_ptr());
+            ffi_encrypted::crocksdb_ctr_encryption_provider_destroy(self.provider_ptr.as_ptr());
+        }
+    }
+}
+
+// SAFETY: the C++ objects are thread-safe; we never alias the raw pointers.
+#[cfg(feature = "encrypted-env")]
+unsafe impl Send for EncryptedEnvInner {}
+#[cfg(feature = "encrypted-env")]
+unsafe impl Sync for EncryptedEnvInner {}
+
 /// A handle to a RocksDB EncryptedEnv.
+///
 /// When passed to Options, all I/O through this DB instance is AES-256-CTR encrypted.
 /// The key is consumed at construction — it is zeroed in memory after being passed to C++.
+///
+/// `EncryptedEnv` is cheaply `Clone`; all clones share ownership of the underlying
+/// C++ objects via `Arc` and the objects are freed only when the last clone is dropped.
 #[cfg(feature = "encrypted-env")]
 pub struct EncryptedEnv {
-    provider_ptr: NonNull<libc::c_void>,
-    env_struct: Box<rocksdb_env_t>,
+    inner: std::sync::Arc<EncryptedEnvInner>,
+}
+
+#[cfg(feature = "encrypted-env")]
+impl Clone for EncryptedEnv {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
 }
 
 #[cfg(feature = "encrypted-env")]
@@ -218,7 +258,7 @@ impl EncryptedEnv {
             ));
         }
 
-        let provider_ptr = unsafe {
+        let provider_raw = unsafe {
             ffi_encrypted::crocksdb_ctr_encryption_provider_create(
                 key.as_ptr() as *const libc::c_char,
                 key.len(),
@@ -231,7 +271,7 @@ impl EncryptedEnv {
         }
         drop(key);
 
-        let provider_ptr = NonNull::new(provider_ptr)
+        let provider_ptr = NonNull::new(provider_raw)
             .ok_or_else(|| "Failed to create CTREncryptionProvider".to_string())?;
 
         let env_raw = unsafe {
@@ -241,33 +281,21 @@ impl EncryptedEnv {
         let env_raw = NonNull::new(env_raw)
             .ok_or_else(|| "Failed to create EncryptedEnv".to_string())?;
 
-        // Create a rocksdb_env_t struct with the rep field set to the C++ Env pointer
-        let env_struct = Box::new(rocksdb_env_t { rep: env_raw.as_ptr() });
-
-        Ok(Self { provider_ptr, env_struct })
+        Ok(Self {
+            inner: std::sync::Arc::new(EncryptedEnvInner { provider_ptr, env_raw }),
+        })
     }
 
-    /// Returns the raw env pointer for passing to Options.
-    /// Do not free this pointer manually — Drop handles cleanup.
-    pub(crate) fn as_ptr(&self) -> *mut rocksdb_env_t {
-        // Use raw pointer to avoid clippy warnings about borrow_as_ptr and ptr_cast_constness
-        (&raw const *self.env_struct).cast_mut()
-    }
-}
-
-#[cfg(feature = "encrypted-env")]
-impl Drop for EncryptedEnv {
-    fn drop(&mut self) {
-        unsafe {
-            // The env_struct is dropped here, but the C++ EncryptedEnv is still alive
-            // The crocksdb_encrypted_env_destroy will be called by the FFI function
-            // which takes ownership of the C++ Env pointer
-            ffi_encrypted::crocksdb_encrypted_env_destroy(self.env_struct.rep);
-            ffi_encrypted::crocksdb_ctr_encryption_provider_destroy(self.provider_ptr.as_ptr());
-        }
+    /// Build a temporary `rocksdb_env_t` wrapper suitable for passing to
+    /// `rocksdb_options_set_env`.  The wrapper is only needed for the duration
+    /// of that call — the options will copy out the inner `Env*` and store it
+    /// directly.  Keeping this `EncryptedEnv` alive (e.g. in `OptionsMustOutliveDB`)
+    /// is what keeps the C++ objects alive; the returned `Box` can be dropped
+    /// immediately after the FFI call.
+    pub(crate) fn as_env_t(&self) -> Box<rocksdb_env_t> {
+        Box::new(rocksdb_env_t { rep: self.inner.env_raw.as_ptr() })
     }
 }
 
-// EncryptedEnv is not Clone or Copy — the raw pointer must not be aliased.
 #[cfg(feature = "encrypted-env")]
 unsafe impl Send for EncryptedEnv {}

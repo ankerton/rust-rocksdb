@@ -177,6 +177,60 @@ impl<DB> Transaction<'_, DB> {
         }
     }
 
+    /// Stamp every key in this transaction's write batch with an 8-byte
+    /// little-endian commit timestamp.
+    ///
+    /// Use this instead of [`set_commit_timestamp`] when the database is an
+    /// [`OptimisticTransactionDB`].  `set_commit_timestamp` delegates to
+    /// `OptimisticTransaction::SetCommitTimestamp` which is a no-op in RocksDB
+    /// (the base class returns `NotSupported`); only `PessimisticTransaction`
+    /// overrides it.  For optimistic transactions the correct approach is to
+    /// call `WriteBatch::UpdateTimestamps` on the transaction's write batch
+    /// directly, which is what this method does.
+    ///
+    /// The timestamp size is fixed at 8 bytes (matching the SurrealDB
+    /// `surrealdb.TimestampComparator` which uses `size_of::<u64>()`).
+    ///
+    /// Call this immediately before [`commit`].
+    ///
+    /// [`set_commit_timestamp`]: Transaction::set_commit_timestamp
+    /// [`OptimisticTransactionDB`]: crate::OptimisticTransactionDB
+    /// [`commit`]: Transaction::commit
+    /// Stamp every key in this transaction's write batch with the given
+    /// commit timestamp.  Must be called after all writes are staged and
+    /// before [`commit`].  Replaces the dummy timestamp stubs that RocksDB
+    /// inserts automatically when user-defined timestamps (UDT) are enabled.
+    ///
+    /// Unlike [`set_commit_timestamp`], this method works for both
+    /// [`OptimisticTransactionDB`] and [`TransactionDB`] by directly calling
+    /// `WriteBatch::UpdateTimestamps()` through the new C shim.
+    ///
+    /// [`commit`]: Transaction::commit
+    /// [`set_commit_timestamp`]: Transaction::set_commit_timestamp
+    /// [`OptimisticTransactionDB`]: crate::OptimisticTransactionDB
+    /// [`TransactionDB`]: crate::TransactionDB
+    pub fn assign_commit_timestamp(&self, ts: u64) -> Result<(), Error> {
+        unsafe {
+            // Call the C shim that stamps every key in the write batch with
+            // `ts` using the per-CF timestamp sizes already tracked by the
+            // WriteBatch (populated by WriteBatch::Put when the CF comparator
+            // has timestamp_size() > 0).  Returns NULL on success, or a
+            // malloc'd error string on failure.
+            let errptr = ffi::rocksdb_transaction_assign_commit_timestamp(
+                self.inner,
+                ts,
+            );
+            if errptr.is_null() {
+                Ok(())
+            } else {
+                use std::ffi::CStr;
+                let msg = CStr::from_ptr(errptr).to_string_lossy().into_owned();
+                ffi::rocksdb_free(errptr as *mut c_void);
+                Err(Error::new(msg))
+            }
+        }
+    }
+
     pub fn set_name(&self, name: &[u8]) -> Result<(), Error> {
         let ptr = name.as_ptr();
         let len = name.len();
@@ -934,7 +988,10 @@ impl<DB> Drop for Transaction<'_, DB> {
 #[cfg(test)]
 mod timestamp_tests {
     use super::*;
-    use crate::{OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteOptions};
+    use crate::{
+        ColumnFamilyDescriptor, OptimisticTransactionDB, OptimisticTransactionOptions, Options,
+        ReadOptions, WriteOptions,
+    };
     use tempfile::TempDir;
 
     fn open_udt_db(dir: &TempDir) -> OptimisticTransactionDB {
@@ -943,6 +1000,55 @@ mod timestamp_tests {
         // UDT requires a timestamp-aware comparator. For this test we use the
         // default comparator — sufficient to verify the FFI call does not crash.
         OptimisticTransactionDB::open(&opts, dir.path()).unwrap()
+    }
+
+    /// Open an OptimisticTransactionDB with a UDT (user-defined timestamp)
+    /// comparator that has timestamp_size = 8 bytes.  This is the real-world
+    /// path that exercises assign_commit_timestamp().
+    fn open_udt_db_with_ts(dir: &TempDir) -> OptimisticTransactionDB {
+        use std::cmp::Ordering;
+
+        let compare = |a: &[u8], b: &[u8]| -> Ordering {
+            // Compare the user key portion (strip the last 8 bytes = timestamp).
+            let ak = &a[..a.len().saturating_sub(8)];
+            let bk = &b[..b.len().saturating_sub(8)];
+            let ord = ak.cmp(bk);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+            // Newer timestamp (larger u64) sorts first → reverse order.
+            let at = u64::from_le_bytes(a[a.len() - 8..].try_into().unwrap_or([0u8; 8]));
+            let bt = u64::from_le_bytes(b[b.len() - 8..].try_into().unwrap_or([0u8; 8]));
+            bt.cmp(&at)
+        };
+        let compare_ts = |a: &[u8], b: &[u8]| -> Ordering {
+            let at = u64::from_le_bytes(a.try_into().unwrap_or([0u8; 8]));
+            let bt = u64::from_le_bytes(b.try_into().unwrap_or([0u8; 8]));
+            at.cmp(&bt)
+        };
+        let compare_without_ts =
+            |a: &[u8], a_has_ts: bool, b: &[u8], b_has_ts: bool| -> Ordering {
+                let ak = if a_has_ts { &a[..a.len().saturating_sub(8)] } else { a };
+                let bk = if b_has_ts { &b[..b.len().saturating_sub(8)] } else { b };
+                ak.cmp(bk)
+            };
+
+        let mut global_opts = Options::default();
+        global_opts.create_if_missing(true);
+        global_opts.create_missing_column_families(true);
+
+        let mut cf_opts = Options::default();
+        cf_opts.set_comparator_with_ts(
+            "test.TimestampComparator",
+            8, // timestamp_size
+            Box::new(compare),
+            Box::new(compare_ts),
+            Box::new(compare_without_ts),
+        );
+
+        let descriptors = vec![ColumnFamilyDescriptor::new("default", cf_opts)];
+        OptimisticTransactionDB::open_cf_descriptors(&global_opts, dir.path(), descriptors)
+            .expect("failed to open UDT+timestamp DB")
     }
 
     #[test]
@@ -969,6 +1075,37 @@ mod timestamp_tests {
         );
         txn.set_read_timestamp_for_validation(u64::MAX);
         let _ = txn.commit();
+    }
+
+    /// Verify that assign_commit_timestamp() correctly stamps the write batch
+    /// and allows the transaction to commit on a UDT-enabled DB.
+    #[test]
+    fn test_assign_commit_timestamp_with_udt_db() {
+        let dir = TempDir::new().unwrap();
+        let db = open_udt_db_with_ts(&dir);
+
+        // --- Write a value ---
+        let txn = db.transaction_opt(
+            &WriteOptions::default(),
+            &OptimisticTransactionOptions::default(),
+        );
+        txn.put(b"hello", b"world").expect("put failed");
+        txn.assign_commit_timestamp(42u64).expect("assign_commit_timestamp failed");
+        txn.commit().expect("commit failed");
+
+        // --- Read it back at timestamp 42 ---
+        let txn2 = db.transaction_opt(
+            &WriteOptions::default(),
+            &OptimisticTransactionOptions::default(),
+        );
+        let mut ro = ReadOptions::default();
+        ro.set_timestamp(42u64.to_le_bytes().to_vec());
+        let val = txn2
+            .get_opt(b"hello", &ro)
+            .expect("get failed")
+            .expect("value missing");
+        assert_eq!(val, b"world", "round-trip value mismatch");
+        let _ = txn2.rollback();
     }
 }
 

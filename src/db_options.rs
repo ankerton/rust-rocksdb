@@ -252,7 +252,7 @@ impl OptionsMustOutliveDB {
             compaction_filter: self.compaction_filter.clone(),
             logger_callback: self.logger_callback.clone(),
             #[cfg(feature = "encrypted-env")]
-            encrypted_env: None, // EncryptedEnv is not cloneable
+            encrypted_env: self.encrypted_env.clone(), // EncryptedEnv is Clone (Arc-based)
         }
     }
 
@@ -1418,12 +1418,19 @@ impl Options {
     /// ```
     #[cfg(feature = "encrypted-env")]
     pub fn set_encrypted_env(&mut self, env: crate::env::EncryptedEnv) {
+        // Build a temporary rocksdb_env_t wrapper around the C++ Env*.
+        // rocksdb_options_set_env reads env_t->rep once and stores the raw Env*
+        // in the options; the wrapper struct is no longer needed after this call.
+        let env_t = env.as_env_t();
         unsafe {
             crate::env::ffi_encrypted::rocksdb_options_set_env(
                 self.inner,
-                env.as_ptr() as *mut libc::c_void,
+                (&raw const *env_t).cast_mut() as *mut libc::c_void,
             );
         }
+        // env_t (Box<rocksdb_env_t>) is dropped here — that is intentional.
+        // We keep the EncryptedEnv (which owns the Arc<Inner>) alive in outlive
+        // so the C++ objects survive for the lifetime of any DB opened from opts.
         self.outlive.encrypted_env = Some(env);
     }
 
