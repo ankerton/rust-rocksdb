@@ -145,6 +145,38 @@ impl<DB> Transaction<'_, DB> {
         Ok(())
     }
 
+    /// Stamp all writes in this transaction with the given commit timestamp.
+    ///
+    /// Must be called before [`commit`] when the column family was opened with a
+    /// timestamp-aware comparator (User-Defined Timestamps). The timestamp is an
+    /// opaque `u64` — SurrealDB uses 8-byte little-endian HLC values.
+    ///
+    /// Calling this on a transaction against a non-UDT column family is a no-op
+    /// at the RocksDB level but should be avoided for clarity.
+    ///
+    /// [`commit`]: Transaction::commit
+    pub fn set_commit_timestamp(&self, ts: u64) {
+        unsafe {
+            ffi::rocksdb_transaction_set_commit_timestamp(self.inner, ts);
+        }
+    }
+
+    /// Set the read timestamp used for conflict validation.
+    ///
+    /// `OptimisticTransactionDB` requires this to be set before commit when the
+    /// column family uses User-Defined Timestamps. RocksDB uses it to detect
+    /// write–write conflicts against the correct version range.
+    ///
+    /// Set this immediately after creating the transaction, before any reads or
+    /// writes. Pass the same timestamp as `ReadOptions::set_timestamp` used for
+    /// reads within this transaction. Use `u64::MAX` to validate against the
+    /// latest version.
+    pub fn set_read_timestamp_for_validation(&self, ts: u64) {
+        unsafe {
+            ffi::rocksdb_transaction_set_read_timestamp_for_validation(self.inner, ts);
+        }
+    }
+
     pub fn set_name(&self, name: &[u8]) -> Result<(), Error> {
         let ptr = name.as_ptr();
         let len = name.len();
@@ -153,7 +185,6 @@ impl<DB> Transaction<'_, DB> {
                 self.inner, ptr as _, len as _
             ));
         }
-
         Ok(())
     }
 
@@ -899,3 +930,45 @@ impl<DB> Drop for Transaction<'_, DB> {
         }
     }
 }
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+    use crate::{OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteOptions};
+    use tempfile::TempDir;
+
+    fn open_udt_db(dir: &TempDir) -> OptimisticTransactionDB {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        // UDT requires a timestamp-aware comparator. For this test we use the
+        // default comparator — sufficient to verify the FFI call does not crash.
+        OptimisticTransactionDB::open(&opts, dir.path()).unwrap()
+    }
+
+    #[test]
+    fn test_set_commit_timestamp_does_not_panic() {
+        let dir = TempDir::new().unwrap();
+        let db = open_udt_db(&dir);
+        let txn = db.transaction_opt(
+            &WriteOptions::default(),
+            &OptimisticTransactionOptions::default(),
+        );
+        // Must not panic or segfault
+        txn.set_commit_timestamp(42u64);
+        // Commit may fail on a non-UDT DB — we only care that the call itself works
+        let _ = txn.commit();
+    }
+
+    #[test]
+    fn test_set_read_timestamp_for_validation_does_not_panic() {
+        let dir = TempDir::new().unwrap();
+        let db = open_udt_db(&dir);
+        let txn = db.transaction_opt(
+            &WriteOptions::default(),
+            &OptimisticTransactionOptions::default(),
+        );
+        txn.set_read_timestamp_for_validation(u64::MAX);
+        let _ = txn.commit();
+    }
+}
+
