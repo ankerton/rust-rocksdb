@@ -20,6 +20,7 @@ use std::sync::Arc;
 use libc::{self, c_char, c_double, c_int, c_uchar, c_uint, c_void, size_t};
 
 use crate::column_family::ColumnFamilyTtl;
+use crate::sst_file_manager::SstFileManager;
 use crate::ffi_util::from_cstr_and_free;
 use crate::statistics::{Histogram, HistogramData, StatsLevel};
 use crate::{
@@ -3793,6 +3794,14 @@ impl Options {
             );
         }
         self.outlive.write_buffer_manager = Some(write_buffer_manager.clone());
+    }
+
+    /// Set the SST file manager for monitoring and managing SST file space usage.
+    ///
+    /// # Arguments
+    /// * `sst_file_manager` - The SST file manager to use.
+    pub fn set_sst_file_manager(&mut self, sst_file_manager: &SstFileManager) {
+        unsafe { ffi::rocksdb_options_set_sst_file_manager(self.inner, sst_file_manager.inner_ptr()) }
     }
 
     /// If true, working thread may avoid doing unnecessary and long-latency

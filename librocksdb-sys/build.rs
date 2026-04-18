@@ -487,6 +487,12 @@ fn cxx_standard() -> String {
 }
 
 fn update_submodules() {
+    // Check if rocksdb and snappy directories already exist with content
+    if Path::new("rocksdb/AUTHORS").exists() && Path::new("snappy/").read_dir().unwrap().count() > 0 {
+        println!("Skipping submodule update - directories already populated");
+        return;
+    }
+
     let program = "git";
     let dir = "../";
     let args = ["submodule", "update", "--init"];
