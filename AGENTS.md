@@ -8,7 +8,7 @@ This file covers all active development plans for the `surrealdb-rocksdb-ankerto
 
 Exposes RocksDB's `EncryptedEnv` to the Rust layer so all SST, WAL, and manifest files
 are transparently AES-256-CTR encrypted. The encryption key is supplied by the caller
-at DB open time — derived from the device Keychain by `app-crypto` at application startup.
+at DB open time — derived from the device Keychain by `app-vault` at application startup.
 
 ### What was built
 
@@ -23,7 +23,7 @@ at DB open time — derived from the device Keychain by `app-crypto` at applicat
 ```rust
 use rocksdb::{EncryptedEnv, Options, OptimisticTransactionDB};
 
-let key: Vec<u8> = app_crypto.raw_key().to_vec(); // 32-byte AES-256 key
+let key: Vec<u8> = app_vault.raw_key().to_vec(); // 32-byte AES-256 key
 let enc_env = EncryptedEnv::new(key)?;
 
 let mut opts = Options::default();
@@ -36,7 +36,7 @@ let db = OptimisticTransactionDB::open(&opts, path)?;
 ### SurrealDB integration
 
 `surrealdb-core` passes the key via `RocksDbConfig::encryption_key: Option<[u8; 32]>`,
-set at startup from `AppCrypto::raw_key()`. The `kvs/rocksdb/mod.rs` backend calls
+set at startup from `AppVault::raw_key()`. The `kvs/rocksdb/mod.rs` backend calls
 `opts.set_encrypted_env(enc_env)` before opening the DB.
 
 ---
