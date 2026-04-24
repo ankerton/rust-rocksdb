@@ -7,8 +7,9 @@ Project-wide rules for every coding session on this repo.
   The BLOCKER must include: exact error output, file and line, root cause analysis, proposed fix, and complexity assessment (trivial / structural).
 - Do not add dependencies unless explicitly listed in AGENTS.md
 - No unwrap() — use Result<T, E> throughout (tests excepted)
-- Run cargo clippy before declaring done
 - Prefer minimal patches — do not refactor beyond the task scope
+- No native cargo or gcc — this machine has no C/C++ compiler. All builds and tests run via
+  Podman using the `rust-builder` image. Use the exact command from AGENTS.md → Verification Command.
 
 ## AGENTS-RESULT.md Schema
 

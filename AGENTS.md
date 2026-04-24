@@ -27,7 +27,7 @@ and already filters `util/build_version.cc`. It does **not** filter `db/c.cc`.
 At line 403-407, `crocksdb/crocksdb.cc` is added when `encrypted-env` is enabled — but
 `db/c.cc` is still in `lib_sources`, causing the collision.
 
-**Exact linker error (from cargo-test.log):**
+**Exact linker error:**
 ```
 /usr/bin/ld: liblibrocksdb_sys-*.rlib(crocksdb.o): in function `rocksdb_options_set_env':
 crocksdb/crocksdb.cc:98: multiple definition of `rocksdb_options_set_env';
@@ -38,11 +38,11 @@ error: could not compile `app-classification` (lib test) due to 1 previous error
 
 ## Implementation Plan
 
-1. Open `librocksdb-sys/build.rs`
-2. After the `lib_sources` variable is constructed (line 172), add a filter that removes
-   `db/c.cc` when `encrypted-env` is enabled
-3. Run `cargo build --features encrypted-env` inside `librocksdb-sys/` to verify no linker error
-4. Run `cargo test --features encrypted-env` to confirm tests pass
+1. Confirm submodules are populated (see Submodules section below)
+2. Open `librocksdb-sys/build.rs`
+3. After the `lib_sources` variable is constructed (line 172), add a `retain` filter that
+   removes `db/c.cc` when `encrypted-env` is enabled
+4. Verify with Podman (see Acceptance Criteria)
 
 ## Key Files
 
@@ -52,21 +52,47 @@ error: could not compile `app-classification` (lib test) due to 1 previous error
 
 ## Submodules
 
-The repo has three submodules (rocksdb, snappy, crocksdb). `build.rs` auto-initialises them
-via `update_submodules()` if not already present — no manual `git submodule update` needed.
+The repo has two git submodules:
+
+| Path | Source |
+|------|--------|
+| `librocksdb-sys/rocksdb` | `https://github.com/facebook/rocksdb.git` |
+| `librocksdb-sys/snappy` | `https://github.com/google/snappy.git` |
+
+`librocksdb-sys/crocksdb/` (contains `crocksdb.cc` and `crocksdb.h`) is **not** a submodule —
+it is directly committed in this repo.
+
+The clone was done with `--recurse-submodules` so submodules should already be populated.
+Before building, verify:
+```bash
+ls librocksdb-sys/rocksdb/AUTHORS   # must exist
+ls librocksdb-sys/snappy/snappy.cc  # must exist
+```
+If either is missing, run: `git submodule update --init --recursive`
 
 ## Dependencies
 
-None beyond what is already declared in `librocksdb-sys/Cargo.toml`.
+The build requires a C++ compiler and cmake. Use the `rust-builder` Podman image for all
+build and test commands — do not rely on native toolchain availability.
 
 ## Shared Interface / Contract
 
 None. This is an internal build script fix with no API surface change.
 
+## Verification Command
+
+This machine has no native C/C++ compiler. Run all builds via Podman:
+
+```bash
+podman run --rm \
+  -v ~/workspaces/rust-rocksdb:/workspace \
+  rust-builder \
+  bash -lc "cargo build --manifest-path /workspace/librocksdb-sys/Cargo.toml --features encrypted-env"
+```
+
 ## Acceptance Criteria
 
-- [ ] `cargo build --features encrypted-env` in `librocksdb-sys/` succeeds with no duplicate symbol errors
-- [ ] `cargo test --features encrypted-env` in `librocksdb-sys/` passes
+- [ ] The Verification Command above succeeds with no duplicate symbol linker errors
 - [ ] No changes to public API, feature flags, or `rocksdb_lib_sources.txt`
 - [ ] The filter is only active when `encrypted-env` is enabled (builds without the feature are unaffected)
 
@@ -79,11 +105,11 @@ None. This is an internal build script fix with no API surface change.
 
 ## Notes
 
-The `cfg!(feature = "encrypted-env")` macro works correctly in `build.rs` for conditional
-compilation. The filter belongs immediately after the `lib_sources` block is defined (after
-line 172) so the exclusion is visible before the `for file in lib_sources` loop at line 397.
+The `cfg!(feature = "encrypted-env")` macro works correctly in `build.rs` build scripts.
+The filter belongs immediately after the `lib_sources` block is defined (after line 172) so
+the exclusion is visible before the `for file in lib_sources` loop at line 397.
 
-Exact insertion point — after:
+Exact insertion point — after this existing block:
 ```rust
     let mut lib_sources = include_str!("rocksdb_lib_sources.txt")
         .trim()
@@ -103,7 +129,7 @@ Add:
 
 When the task is finished:
 
-1. Run `cargo build --features encrypted-env` and `cargo test --features encrypted-env` inside `librocksdb-sys/`
+1. Run the Verification Command above and confirm it passes
 2. Commit all changes to this branch
 3. Write `AGENTS-RESULT.md` at the repo root (see QWEN.md for the schema)
 4. Commit `AGENTS-RESULT.md`
@@ -116,6 +142,6 @@ When the task is finished:
 7. Your job is done — do NOT merge
 
 Declare exactly one state:
-- **DONE** — both cargo commands pass, fix is minimal
+- **DONE** — Podman build passes, fix is minimal and correct
 - **NEEDS-ITERATION** — build passes but something needs orchestrator attention
 - **BLOCKER** — a constraint or dependency prevents the fix; document fully per QWEN.md
