@@ -214,20 +214,12 @@ impl<DB> Transaction<'_, DB> {
             // Call the C shim that stamps every key in the write batch with
             // `ts` using the per-CF timestamp sizes already tracked by the
             // WriteBatch (populated by WriteBatch::Put when the CF comparator
-            // has timestamp_size() > 0).  Returns NULL on success, or a
-            // malloc'd error string on failure.
-            let errptr = ffi::rocksdb_transaction_assign_commit_timestamp(
+            // has timestamp_size() > 0).
+            ffi::rocksdb_transaction_set_commit_timestamp(
                 self.inner,
                 ts,
             );
-            if errptr.is_null() {
-                Ok(())
-            } else {
-                use std::ffi::CStr;
-                let msg = CStr::from_ptr(errptr).to_string_lossy().into_owned();
-                ffi::rocksdb_free(errptr as *mut c_void);
-                Err(Error::new(msg))
-            }
+            Ok(())
         }
     }
 
