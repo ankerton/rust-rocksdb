@@ -171,6 +171,12 @@ fn build_rocksdb() {
         .filter(|file| !matches!(*file, "util/build_version.cc"))
         .collect::<Vec<&'static str>>();
 
+    // When encrypted-env is enabled, crocksdb/crocksdb.cc re-exports the rocksdb C API
+    // (including db/c.cc). Exclude db/c.cc from lib_sources to avoid duplicate symbols.
+    if cfg!(feature = "encrypted-env") {
+        lib_sources.retain(|f| !matches!(*f, "db/c.cc"));
+    }
+
     // attempt to pass through the RUSTFLAGS -Ctarget-cpu to allow the same optimizations for C/C++
     pass_through_target_cpu(&mut config);
 
