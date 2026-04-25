@@ -95,9 +95,6 @@ void crocksdb_encrypted_env_destroy(void* env) {
 #endif
 }
 
-void rocksdb_options_set_env(rocksdb_options_t* opts, rocksdb_env_t* env) {
-    rocksdb::Options* options = reinterpret_cast<rocksdb::Options*>(opts);
-    options->env = (env ? static_cast<rocksdb::Env*>(env->rep) : nullptr);
-}
+// rocksdb_options_set_env is provided by db/c.cc — not duplicated here.
 
 }  // extern "C"
