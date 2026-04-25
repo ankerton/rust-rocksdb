@@ -171,11 +171,11 @@ fn build_rocksdb() {
         .filter(|file| !matches!(*file, "util/build_version.cc"))
         .collect::<Vec<&'static str>>();
 
-    // When encrypted-env is enabled, crocksdb/crocksdb.cc re-exports the rocksdb C API
-    // (including db/c.cc). Exclude db/c.cc from lib_sources to avoid duplicate symbols.
-    if cfg!(feature = "encrypted-env") {
-        lib_sources.retain(|f| !matches!(*f, "db/c.cc"));
-    }
+    // NOTE: crocksdb/crocksdb.cc (our ankerton fork) only provides the encryption shim
+    // (crocksdb_ctr_encryption_*, crocksdb_encrypted_env_*). It does NOT re-export the
+    // standard RocksDB C API from db/c.cc, so we must always include db/c.cc regardless
+    // of whether encrypted-env is enabled. The original upstream comment claiming that
+    // crocksdb.cc re-exports db/c.cc does not apply to this fork.
 
     // attempt to pass through the RUSTFLAGS -Ctarget-cpu to allow the same optimizations for C/C++
     pass_through_target_cpu(&mut config);
