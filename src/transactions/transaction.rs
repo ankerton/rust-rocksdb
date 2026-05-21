@@ -210,15 +210,17 @@ impl<DB> Transaction<'_, DB> {
     /// [`OptimisticTransactionDB`]: crate::OptimisticTransactionDB
     /// [`TransactionDB`]: crate::TransactionDB
     pub fn assign_commit_timestamp(&self, ts: u64) -> Result<(), Error> {
+        // Calls our new Ankerton C shim rocksdb_transaction_update_timestamps_u64
+        // which routes through WriteBatch::UpdateTimestamps on the transaction's
+        // underlying write batch. Works for both OptimisticTransactionDB and
+        // TransactionDB — the upstream `_set_commit_timestamp` shim was a no-op
+        // for the former because OptimisticTransaction doesn't override
+        // SetCommitTimestamp. See c.cc / c.h Ankerton-prefixed comments.
         unsafe {
-            // Call the C shim that stamps every key in the write batch with
-            // `ts` using the per-CF timestamp sizes already tracked by the
-            // WriteBatch (populated by WriteBatch::Put when the CF comparator
-            // has timestamp_size() > 0).
-            ffi::rocksdb_transaction_set_commit_timestamp(
+            ffi_try!(ffi::rocksdb_transaction_update_timestamps_u64(
                 self.inner,
                 ts,
-            );
+            ));
             Ok(())
         }
     }
