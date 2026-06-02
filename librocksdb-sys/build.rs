@@ -358,8 +358,14 @@ fn build_rocksdb() {
         if let Some(include) = openssl_include.or(openssl_include_dir) {
             config.include(include);
         }
-        println!("cargo:rustc-link-lib=static=ssl");
-        println!("cargo:rustc-link-lib=static=crypto");
+        // OpenSSL static library names differ on MSVC toolchains.
+        if target.contains("msvc") {
+            println!("cargo:rustc-link-lib=static=libssl");
+            println!("cargo:rustc-link-lib=static=libcrypto");
+        } else {
+            println!("cargo:rustc-link-lib=static=ssl");
+            println!("cargo:rustc-link-lib=static=crypto");
+        }
     }
 
     #[cfg(feature = "io-uring")]
