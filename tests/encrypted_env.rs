@@ -85,3 +85,60 @@ fn test_encrypted_files_unreadable_without_env() {
         // Open failing entirely is also an acceptable outcome
     }
 }
+
+// ── CS-070 (storage-stack #55): CSPRNG-seeded per-file encryption prefix ──────────────────
+
+fn open_encrypted(dir: &std::path::Path) {
+    let env = EncryptedEnv::new(test_key()).unwrap();
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    opts.set_encrypted_env(env);
+    let db = DB::open(&opts, dir).unwrap();
+    db.put(b"k", b"v").unwrap(); // identical logical content in both stores
+    drop(db);
+}
+
+/// Two stores opened with the SAME key produce DIFFERENT on-disk prefixes. The first prefix
+/// block holds the per-file IV/initial-counter (stored in clear). With the old time-seeded LCG
+/// these could collide; with `RAND_bytes` they are independent. This is the #55 fix.
+#[test]
+fn test_csprng_prefix_differs_across_files() {
+    let d1 = TempDir::new().unwrap();
+    let d2 = TempDir::new().unwrap();
+    open_encrypted(d1.path());
+    open_encrypted(d2.path());
+
+    // CURRENT is written through the encrypted env, so it carries the per-file prefix.
+    let c1 = std::fs::read(d1.path().join("CURRENT")).unwrap();
+    let c2 = std::fs::read(d2.path().join("CURRENT")).unwrap();
+    assert!(c1.len() >= 16 && c2.len() >= 16, "encrypted CURRENT carries a prefix");
+    assert_ne!(
+        &c1[..16],
+        &c2[..16],
+        "per-file CSPRNG prefix must differ across two same-key stores (no time-seed collision)"
+    );
+}
+
+/// Reopening a store written with the CSPRNG prefix reads data back correctly — the prefix is
+/// decoded from the stored bytes, so the change is format-compatible.
+#[test]
+fn test_csprng_prefix_reopen_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    {
+        let env = EncryptedEnv::new(test_key()).unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.set_encrypted_env(env);
+        let db = DB::open(&opts, dir.path()).unwrap();
+        db.put(b"persist", b"value").unwrap();
+        db.flush().unwrap();
+    }
+    {
+        let env = EncryptedEnv::new(test_key()).unwrap();
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+        opts.set_encrypted_env(env);
+        let db = DB::open(&opts, dir.path()).unwrap();
+        assert_eq!(db.get(b"persist").unwrap().as_deref(), Some(b"value".as_ref()));
+    }
+}
