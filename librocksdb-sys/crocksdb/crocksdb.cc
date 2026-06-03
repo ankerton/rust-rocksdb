@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 // AES256BlockCipher - Implements BlockCipher using OpenSSL's EVP API
 // This is a simple block cipher that encrypts/decrypts single blocks.
@@ -57,6 +58,31 @@ class AES256BlockCipher final : public rocksdb::BlockCipher {
     rocksdb::Status Decrypt(char* data) override { return Encrypt(data); }
 };
 
+// CsprngCtrEncryptionProvider - AES-256-CTR provider with a CSPRNG-seeded prefix.
+//
+// The stock rocksdb CTREncryptionProvider::CreateNewPrefix seeds the per-file IV and initial
+// counter from `Random((uint32_t)NowMicros())` — a 31-bit, time-seeded, non-cryptographic LCG.
+// Under a single lifelong key that is a CTR keystream-reuse risk (storage-stack #55). Override
+// CreateNewPrefix to fill the entire prefix with cryptographically secure random bytes
+// (OpenSSL RAND_bytes). Decryption is unaffected and format-compatible: CreateCipherStream
+// reads the IV/initial-counter back from the stored prefix regardless of how it was generated,
+// so files written by the stock provider remain readable.
+class CsprngCtrEncryptionProvider final : public rocksdb::CTREncryptionProvider {
+  public:
+    using rocksdb::CTREncryptionProvider::CTREncryptionProvider;
+
+    const char* Name() const override { return "CsprngCtrEncryptionProvider"; }
+
+    rocksdb::Status CreateNewPrefix(const std::string& /*fname*/, char* prefix,
+                                    size_t prefixLength) const override {
+        if (RAND_bytes(reinterpret_cast<unsigned char*>(prefix),
+                       static_cast<int>(prefixLength)) != 1) {
+            return rocksdb::Status::IOError("RAND_bytes failed generating encryption prefix");
+        }
+        return rocksdb::Status::OK();
+    }
+};
+
 #endif  // ROCKSDB_ENCRYPTED_ENV
 
 extern "C" {
@@ -66,7 +92,8 @@ void* crocksdb_ctr_encryption_provider_create(const char* key, size_t key_len) {
     if (key_len != 32) return nullptr;
     std::string key_str(key, key_len);
     auto cipher  = std::make_shared<AES256BlockCipher>(key_str);
-    auto provider = std::make_shared<rocksdb::CTREncryptionProvider>(cipher);
+    // CSPRNG-seeded prefix (storage-stack #55) instead of the stock time-seeded one.
+    auto provider = std::make_shared<CsprngCtrEncryptionProvider>(cipher);
     return new std::shared_ptr<rocksdb::EncryptionProvider>(provider);
 #else
     return nullptr;
