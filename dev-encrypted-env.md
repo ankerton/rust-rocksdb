@@ -3,11 +3,13 @@ The `encrypted-env` feature has been successfully implemented for the surrealdb/
 ## Changes Made
 
 ### 1. C++ Shim (`librocksdb-sys/crocksdb/crocksdb.cc`)
-Added the `crocksdb_ctr_encryption_provider_create` function that instantiates RocksDB's built-in AES-256 cipher via `CTREncryptionProvider`. The implementation:
+Added the `crocksdb_ctr_encryption_provider_create` function that instantiates an AES-256-CTR encryption provider. The implementation:
 - Validates that the key is exactly 32 bytes (AES-256 requirement)
-- Creates an AES-256 block cipher using `BlockCipher::CreateFromString("AES256:16")`
-- Wraps the cipher in a `CTREncryptionProvider` using `NewCTRProvider`
+- Creates a hand-rolled `AES256BlockCipher` block primitive backed by OpenSSL's EVP API (`EVP_aes_256_ecb`, no padding); the CTR-mode keystream is driven by the provider on top of this block cipher
+- Wraps the cipher in a `CsprngCtrEncryptionProvider` — a subclass of RocksDB's `CTREncryptionProvider` that overrides `CreateNewPrefix` to seed each file's IV/prefix from a CSPRNG (`RAND_bytes`) rather than the stock time-seeded default (see CS-070)
 - Stores the `shared_ptr<EncryptionProvider>` on the heap and returns a raw pointer for FFI compatibility
+
+> Note (#60): an earlier draft of this doc described `BlockCipher::CreateFromString("AES256:16")` + `NewCTRProvider`. That construction was never shipped — the bullets above match the actual `librocksdb-sys/crocksdb/crocksdb.cc`.
 
 ### 2. Feature Flag (`Cargo.toml` and `librocksdb-sys/Cargo.toml`)
 Added the `encrypted-env` feature flag to both Cargo.toml files, with proper propagation from the main crate to the sys crate. The feature is opt-in and completely isolated — callers without it see no changes.
@@ -115,8 +117,9 @@ void rocksdb_options_set_env(rocksdb_options_t* opts, rocksdb_env_t* env);
 
 ### Security Notes
 
-- The implementation uses RocksDB's built-in `CTREncryptionProvider` with AES-256-CTR
+- The implementation uses a `CsprngCtrEncryptionProvider` (a `CTREncryptionProvider` subclass) running AES-256-CTR over a hand-rolled OpenSSL-EVP `AES256BlockCipher`; per-file IV prefixes are CSPRNG-seeded (CS-070)
 - All file I/O (SST, WAL, manifest) is encrypted transparently
 - Without the correct key, encrypted databases cannot be opened
+- CTR is a confidentiality-only mode (no AEAD/integrity at the cipher layer); whole-store at-rest tamper detection is layered above in app-data (ADR-032 §D-D / CS-073)
 
 The implementation is minimal, non-breaking (opt-in via feature flag), and follows the AGENTS.md specification for exposing RocksDB's `EncryptedEnv` to the Rust layer.
