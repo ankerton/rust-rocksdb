@@ -558,6 +558,18 @@ fn main() {
         build_rocksdb();
     } else {
         cpp_link_stdlib(&target);
+        // Prebuilt rocksdb path (ROCKSDB_LIB_DIR): the from-source path emits the
+        // OpenSSL link directives inside build_rocksdb(), which is skipped here. The
+        // prebuilt librocksdb.a still references EVP_*/RAND_bytes from its AES-256
+        // encrypted-env provider, so re-emit the crypto links or the final link fails
+        // with "Undefined symbols ... _EVP_CIPHER_CTX_free". openssl-sys (vendored, a
+        // dependency under the encrypted-env feature) is built regardless and supplies
+        // the rustc-link-search path.
+        #[cfg(feature = "encrypted-env")]
+        {
+            println!("cargo:rustc-link-lib=static=ssl");
+            println!("cargo:rustc-link-lib=static=crypto");
+        }
     }
     if cfg!(feature = "snappy") && !try_to_find_and_link_lib("SNAPPY") {
         println!("cargo:rerun-if-changed=snappy/");
