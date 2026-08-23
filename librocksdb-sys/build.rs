@@ -558,6 +558,17 @@ fn main() {
         build_rocksdb();
     } else {
         cpp_link_stdlib(&target);
+        // Prebuilt RocksDB: build_rocksdb() — which links OpenSSL for the
+        // encrypted-env AES shim — was skipped, but the prebuilt librocksdb.a
+        // still contains that shim (AES256BlockCipher / CsprngCtrEncryptionProvider).
+        // Without linking OpenSSL here too, EVP_*/RAND_* are undefined at the final
+        // link of any consumer binary/test. openssl-sys (vendored) provides the
+        // search path; emit the libs after rocksdb so the order resolves.
+        #[cfg(feature = "encrypted-env")]
+        {
+            println!("cargo:rustc-link-lib=static=ssl");
+            println!("cargo:rustc-link-lib=static=crypto");
+        }
     }
     if cfg!(feature = "snappy") && !try_to_find_and_link_lib("SNAPPY") {
         println!("cargo:rerun-if-changed=snappy/");
