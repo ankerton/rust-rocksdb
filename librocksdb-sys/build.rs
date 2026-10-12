@@ -19,6 +19,21 @@ fn link(name: &str, bundled: bool) {
     }
 }
 
+/// Link OpenSSL's libssl and libcrypto statically, for the AES-256 encrypted-env provider.
+///
+/// The archives are named per toolchain: `libssl.a`/`libcrypto.a` on Unix-like targets, where the
+/// linker adds the `lib` prefix itself (so the names given are `ssl`/`crypto`), but
+/// `libssl.lib`/`libcrypto.lib` on MSVC, which adds no prefix. That is what vendored `openssl-src`
+/// produces for `*-windows-msvc` (and what OpenSSL ≥ 1.1 installs there). Decided by the
+/// **target**'s environment: `cfg!(target_env)` in a build script describes the host.
+#[cfg(feature = "encrypted-env")]
+fn link_openssl() {
+    let msvc = env::var("CARGO_CFG_TARGET_ENV").map(|e| e == "msvc").unwrap_or(false);
+    let (ssl, crypto) = if msvc { ("libssl", "libcrypto") } else { ("ssl", "crypto") };
+    println!("cargo:rustc-link-lib=static={ssl}");
+    println!("cargo:rustc-link-lib=static={crypto}");
+}
+
 fn fail_on_empty_directory(name: &str) {
     if fs::read_dir(name).unwrap().count() == 0 {
         println!("The `{name}` directory is empty, did you forget to pull the submodules?");
@@ -358,8 +373,7 @@ fn build_rocksdb() {
         if let Some(include) = openssl_include.or(openssl_include_dir) {
             config.include(include);
         }
-        println!("cargo:rustc-link-lib=static=ssl");
-        println!("cargo:rustc-link-lib=static=crypto");
+        link_openssl();
     }
 
     #[cfg(feature = "io-uring")]
@@ -566,10 +580,7 @@ fn main() {
         // dependency under the encrypted-env feature) is built regardless and supplies
         // the rustc-link-search path.
         #[cfg(feature = "encrypted-env")]
-        {
-            println!("cargo:rustc-link-lib=static=ssl");
-            println!("cargo:rustc-link-lib=static=crypto");
-        }
+        link_openssl();
     }
     if cfg!(feature = "snappy") && !try_to_find_and_link_lib("SNAPPY") {
         println!("cargo:rerun-if-changed=snappy/");
